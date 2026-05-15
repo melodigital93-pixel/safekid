@@ -1,0 +1,307 @@
+"use client";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  collection, query, where, getDocs, addDoc, serverTimestamp,
+  doc, getDoc, updateDoc,
+} from "firebase/firestore";
+import { signOut } from "firebase/auth";
+import { auth, db } from "@/lib/firebase";
+import { useAuth } from "@/lib/useAuth";
+import { BottomNav } from "@/components/BottomNav";
+import { QRCodeSVG } from "qrcode.react";
+
+const WA_NUMBER = "5511999999999";
+const WA_LINK   = `https://wa.me/${WA_NUMBER}?text=Ol%C3%A1!%20Quero%20assinar%20o%20SafeKid`;
+
+const PLANS = [
+  {
+    key: "weekly_basic", label: "Semanal", period: "semana", badge: "",
+    price: 9.90, children: 1,
+    features: ["1 filho","GPS a cada 30min","Tempo de tela","Alerta SOS"],
+  },
+  {
+    key: "monthly_pro", label: "Mensal Pro", period: "mês", badge: "Mais popular",
+    price: 24.90, children: 3,
+    features: ["3 filhos","GPS tempo real","Bloqueio de apps","Filtro web","Alertas WhatsApp","Botão SOS"],
+  },
+  {
+    key: "monthly_family", label: "Mensal Família", period: "mês", badge: "",
+    price: 39.90, children: 999,
+    features: ["Filhos ilimitados","Todos recursos Pro","Histórico 90 dias","Relatório PDF","Suporte prioritário"],
+  },
+  {
+    key: "annual_pro", label: "Anual Pro", period: "ano", badge: "Economize 33%",
+    price: 199.00, children: 3,
+    features: ["3 filhos","GPS tempo real","Todos recursos","Economia de R$100/ano"],
+  },
+  {
+    key: "annual_family", label: "Anual Família", period: "ano", badge: "Melhor custo",
+    price: 299.00, children: 999,
+    features: ["Filhos ilimitados","Todos recursos","Economia de R$180/ano","Suporte VIP"],
+  },
+];
+
+export default function SettingsPage() {
+  const { user } = useAuth();
+  const router   = useRouter();
+  const [children, setChildren] = useState<any[]>([]);
+  const [userData, setUserData] = useState<any>(null);
+  const [name, setName] = useState("");
+  const [age,  setAge]  = useState("");
+  const [adding, setAdding]   = useState(false);
+  const [qr, setQr]           = useState<string|null>(null);
+  const [trial, setTrial]     = useState<number|null>(null);
+  const [trialHours, setTrialHours] = useState<number|null>(null);
+  const [selPlan, setSelPlan] = useState("monthly_pro");
+  const [tab, setTab]         = useState<"plano"|"filhos"|"instrucoes">("plano");
+
+  useEffect(() => { if (!user) return; loadData(); }, [user]);
+
+  async function loadData() {
+    const q    = query(collection(db,"children"), where("parentUid","==",user!.uid), where("active","==",true));
+    const snap = await getDocs(q);
+    setChildren(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    const ud = await getDoc(doc(db,"users",user!.uid));
+    if (ud.exists()) {
+      const d = ud.data(); setUserData(d);
+      const te = d.trialEndsAt?.toDate?.() ?? new Date(d.trialEndsAt);
+      const msLeft = te.getTime() - Date.now();
+      setTrial(Math.max(0, Math.ceil(msLeft / 86400000)));
+      setTrialHours(Math.max(0, Math.ceil(msLeft / 3600000)));
+    }
+  }
+
+  async function addChild(e: React.FormEvent) {
+    e.preventDefault(); setAdding(true);
+    try {
+      const code = Math.random().toString(36).substring(2,8).toUpperCase();
+      const ref  = await addDoc(collection(db,"children"), {
+        parentUid: user!.uid, name, age: parseInt(age),
+        pairingCode: code, deviceId: null, active: true,
+        screenTimeLimits: {}, blockedApps: [],
+        bedtimeStart: "22:00", bedtimeEnd: "07:00",
+        webFilterEnabled: true, createdAt: serverTimestamp(),
+      });
+      const childUrl = `${window.location.origin}/dashboard/child?id=${ref.id}&code=${code}`;
+      setQr(childUrl); setName(""); setAge(""); await loadData();
+    } catch (e: any) { alert(e.message); }
+    finally { setAdding(false); }
+  }
+
+  async function removeChild(id: string) {
+    if (!confirm("Remover este filho?")) return;
+    await updateDoc(doc(db,"children",id), { active: false }); await loadData();
+  }
+
+  async function logout() { await signOut(auth); router.push("/"); }
+
+  const plan    = userData?.plan;
+  const planOk  = ["weekly_basic","monthly_pro","monthly_family","annual_pro","annual_family"].includes(plan);
+  const isExpired = !planOk && (trialHours === 0);
+
+  return (
+    <div className="min-h-screen pb-24">
+      <div className="bg-navy2 border-b border-bdr px-4 py-4">
+        <h1 className="sora font-extrabold text-lg text-white">⚙️ Configurações</h1>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex border-b border-bdr">
+        {(["plano","filhos","instrucoes"] as const).map(t => (
+          <button key={t} onClick={() => setTab(t)}
+            className={["flex-1 py-3 text-xs font-semibold sora transition-colors border-b-2",
+              tab===t ? "border-teal text-teal" : "border-transparent text-muted"].join(" ")}>
+            {t==="plano" ? "💳 Plano" : t==="filhos" ? "👧 Filhos" : "📱 Instalar"}
+          </button>
+        ))}
+      </div>
+
+      <div className="p-4 space-y-4">
+
+        {/* ── TAB PLANO ── */}
+        {tab === "plano" && (
+          <>
+            {/* Status atual */}
+            <div className={["rounded-2xl p-4 border",
+              isExpired ? "bg-red-500/10 border-red-500/30" :
+              planOk    ? "bg-teal/10 border-teal/30" :
+                          "bg-yellow-500/10 border-yellow-500/30"].join(" ")}>
+              <p className="sora font-bold text-white mb-1">
+                {planOk    ? "✅ Plano ativo: " + plan :
+                 isExpired ? "🔴 Período de teste encerrado" :
+                             `⚡ Teste gratuito: ${trialHours}h restantes`}
+              </p>
+              <p className="text-xs text-muted">
+                {planOk ? "Obrigado por ser assinante SafeKid!" :
+                 isExpired ? "Assine agora para continuar monitorando seus filhos." :
+                             "Aproveite todos os recursos durante o teste."}
+              </p>
+            </div>
+
+            {/* Comparativo de mercado */}
+            {!planOk && (
+              <div className="bg-navy2 border border-bdr rounded-xl p-3">
+                <p className="text-xs text-muted mb-2">📊 Comparativo com concorrentes:</p>
+                <div className="space-y-1 text-xs">
+                  <div className="flex justify-between"><span className="text-muted">Qustodio</span><span className="text-white">R$ 45/mês</span></div>
+                  <div className="flex justify-between"><span className="text-muted">mSpy</span><span className="text-white">R$ 80/mês</span></div>
+                  <div className="flex justify-between text-teal font-bold"><span>SafeKid ⭐</span><span>A partir de R$ 9,90/sem</span></div>
+                </div>
+              </div>
+            )}
+
+            {/* Seletor de planos */}
+            {!planOk && (
+              <>
+                <p className="sora font-bold text-white text-sm">Escolha seu plano:</p>
+                <div className="space-y-3">
+                  {PLANS.map(p => (
+                    <button key={p.key} onClick={() => setSelPlan(p.key)}
+                      className={["w-full text-left rounded-2xl border p-4 transition-all",
+                        selPlan===p.key ? "border-teal bg-teal/10" : "border-bdr bg-card"].join(" ")}>
+                      <div className="flex items-start justify-between mb-2">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="sora font-bold text-white">{p.label}</span>
+                            {p.badge && <span className="text-xs bg-teal text-black px-2 py-0.5 rounded-full font-bold">{p.badge}</span>}
+                          </div>
+                          <div className="sora font-extrabold text-teal text-xl mt-1">
+                            R$ {p.price.toFixed(2).replace(".",",")}
+                            <span className="text-xs text-muted font-normal">/{p.period}</span>
+                          </div>
+                        </div>
+                        <div className={["w-5 h-5 rounded-full border-2 mt-1 flex items-center justify-center",
+                          selPlan===p.key ? "border-teal" : "border-bdr"].join(" ")}>
+                          {selPlan===p.key && <div className="w-2.5 h-2.5 rounded-full bg-teal"/>}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {p.features.map(f => (
+                          <span key={f} className="text-xs text-muted bg-navy px-2 py-0.5 rounded-full">✓ {f}</span>
+                        ))}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Botões de pagamento */}
+                <div className="space-y-2">
+                  <a href={WA_LINK} target="_blank" rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-2 w-full bg-teal text-black sora font-bold py-4 rounded-xl text-sm">
+                    💳 Assinar via PIX ou Cartão (WhatsApp)
+                  </a>
+                  <p className="text-xs text-muted text-center">
+                    Pagamento 100% seguro • Cancele quando quiser
+                  </p>
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {/* ── TAB FILHOS ── */}
+        {tab === "filhos" && (
+          <>
+            {children.map(c => (
+              <div key={c.id} className="bg-card border border-bdr rounded-2xl p-4">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-full bg-teal/10 flex items-center justify-center sora font-bold text-teal">
+                    {c.name?.[0]?.toUpperCase()}
+                  </div>
+                  <div className="flex-1">
+                    <div className="font-semibold text-white">{c.name} · {c.age} anos</div>
+                    <div className="text-xs text-muted">Código: <span className="text-teal font-bold tracking-widest">{c.pairingCode}</span></div>
+                  </div>
+                  <button onClick={() => removeChild(c.id)} className="text-red-400 text-xs px-2 py-1 border border-red-400/30 rounded-lg">Remover</button>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => {
+                    const url = `${window.location.origin}/dashboard/child?id=${c.id}&code=${c.pairingCode}`;
+                    setQr(url); setTab("instrucoes");
+                  }} className="flex-1 bg-teal text-black sora font-bold py-2 rounded-xl text-xs">
+                    📱 Ver QR Code / Link
+                  </button>
+                </div>
+              </div>
+            ))}
+
+            <form onSubmit={addChild} className="bg-card border border-bdr rounded-2xl p-4 space-y-3">
+              <p className="sora font-bold text-white text-sm">+ Adicionar filho</p>
+              <input value={name} onChange={e=>setName(e.target.value)} placeholder="Nome do filho" required
+                className="w-full bg-navy border border-bdr rounded-xl px-3 py-2.5 text-sm outline-none focus:border-teal placeholder:text-muted"/>
+              <div className="flex gap-2">
+                <input type="number" value={age} onChange={e=>setAge(e.target.value)}
+                  placeholder="Idade" min="1" max="17" required
+                  className="w-24 bg-navy border border-bdr rounded-xl px-3 py-2.5 text-sm outline-none focus:border-teal placeholder:text-muted"/>
+                <button type="submit" disabled={adding}
+                  className="flex-1 bg-teal text-black sora font-bold rounded-xl text-sm disabled:opacity-50">
+                  {adding ? "..." : "Adicionar"}
+                </button>
+              </div>
+            </form>
+          </>
+        )}
+
+        {/* ── TAB INSTRUÇÕES ── */}
+        {tab === "instrucoes" && (
+          <>
+            {qr && (
+              <div className="bg-card border border-teal rounded-2xl p-5 text-center">
+                <p className="sora font-bold text-white mb-1">📱 Link do dispositivo filho</p>
+                <p className="text-xs text-muted mb-4">Mostre o QR Code para o filho abrir no celular dele</p>
+                <div className="flex justify-center mb-4">
+                  <div className="bg-white p-3 rounded-xl"><QRCodeSVG value={qr} size={160}/></div>
+                </div>
+                <button onClick={() => {navigator.clipboard.writeText(qr); alert("Link copiado!");}}
+                  className="w-full bg-teal text-black sora font-bold py-2.5 rounded-xl text-sm mb-2">
+                  📋 Copiar link
+                </button>
+                <p className="text-xs text-muted">Ou envie por WhatsApp para o celular do filho</p>
+              </div>
+            )}
+
+            <div className="bg-card border border-bdr rounded-2xl p-4">
+              <p className="sora font-bold text-white mb-3">📋 Como instalar no celular do filho</p>
+              {[
+                ["Passo 1","Abra o QR Code ou copie o link acima"],
+                ["Passo 2","No celular do filho, abra o Chrome (Android) ou Safari (iPhone)"],
+                ["Passo 3","Acesse o link — vai abrir a tela de monitoramento automaticamente"],
+                ["Passo 4","No Android: toque nos 3 pontos ⋮ → 'Adicionar à tela inicial' — o ícone vai aparecer como um app normal"],
+                ["Passo 5","No iPhone: toque em Compartilhar ⬆️ → 'Adicionar à Tela de Início'"],
+                ["Passo 6","O GPS começa a funcionar assim que o filho permitir a localização"],
+                ["Importante","Mantenha o app aberto em segundo plano para o GPS continuar enviando"],
+              ].map(([step, desc]) => (
+                <div key={step} className="flex gap-3 py-2.5 border-b border-bdr last:border-0">
+                  <span className="text-xs font-bold text-teal sora flex-shrink-0 w-16">{step}</span>
+                  <span className="text-xs text-muted leading-relaxed">{desc}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-2xl p-4">
+              <p className="sora font-bold text-yellow-300 text-sm mb-2">⚖️ Aviso Legal</p>
+              <p className="text-xs text-muted leading-relaxed">
+                O uso do SafeKid é permitido apenas por pais ou responsáveis legais para monitorar menores de 18 anos sob sua tutela. O dispositivo monitorado exibe automaticamente um aviso de monitoramento, conforme exigido pelo ECA e LGPD. O uso em dispositivos de adultos sem consentimento é ilegal.
+              </p>
+            </div>
+
+            <a href={WA_LINK} target="_blank" rel="noopener noreferrer"
+              className="flex items-center justify-center gap-2 w-full bg-green-600 text-white sora font-bold py-3.5 rounded-xl text-sm">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="white">
+                <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+              </svg>
+              Dúvidas? Falar no WhatsApp
+            </a>
+          </>
+        )}
+
+        <button onClick={logout}
+          className="w-full border border-bdr rounded-2xl py-3.5 text-muted text-sm hover:text-white transition-colors">
+          🚪 Sair da conta
+        </button>
+      </div>
+      <BottomNav active="config"/>
+    </div>
+  );
+}
